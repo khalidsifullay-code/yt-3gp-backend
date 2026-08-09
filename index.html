@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Lite 3GP</title>
+    <style>
+        body { font-family: sans-serif; padding: 5px; background: #fff; color: #000; font-size: 12px; }
+        input, button { font-size: 12px; margin: 2px 0; }
+        .item { border-bottom: 1px solid #ccc; padding: 5px 0; margin-bottom: 5px; }
+        a { color: blue; text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h3>YouTube Lite (3GP)</h3>
+    <form action="" method="GET">
+        <input type="text" name="q" id="query" placeholder="ভিডিও নাম লিখুন...">
+        <button type="submit">Search</button>
+    </form>
+    <hr>
+    <div id="results"></div>
+
+    <script>
+        // Render থেকে পাওয়া লিংকটি নিচের কোটেশনের ভেতরে বসান
+        const BACKEND_URL = "https://yt-3gp-backend.onrender.com";
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const q = urlParams.get('q');
+
+        if(q) {
+            document.getElementById('query').value = q;
+            document.getElementById('results').innerHTML = "খোঁজা হচ্ছে, অপেক্ষা করুন...";
+            
+            fetch(BACKEND_URL + '/search?q=' + encodeURIComponent(q))
+                .then(res => res.json())
+                .then(data => {
+                    let html = '';
+                    if(!data || data.length === 0) {
+                        html = 'কোনো ভিডিও পাওয়া যায়নি।';
+                    } else {
+                        data.forEach(item => {
+                            let durationMin = item.duration ? Math.floor(item.duration / 60) + "m" : "";
+                            let dlUrl = BACKEND_URL + '/download?id=' + item.id;
+                            html += `<div class="item">
+                                <b>${item.title}</b> [${durationMin}]<br>
+                                <a href="${dlUrl}">[ Download 3GP ]</a>
+                            </div>`;
+                        });
+                    }
+                    document.getElementById('results').innerHTML = html;
+                })
+                .catch(err => {
+                    document.getElementById('results').innerHTML = "কোথাও সমস্যা হয়েছে। ব্যাকএন্ড সার্ভিস চেক করুন।";
+                });
+        }
+    </script>
+</body>
+</html>
