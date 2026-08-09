@@ -2,6 +2,7 @@ import os
 import re
 import urllib.parse
 import urllib.request
+import json
 import subprocess
 from flask import Flask, request, send_file, render_template_string
 from yt_dlp import YoutubeDL
@@ -91,6 +92,40 @@ def index():
         results = search_youtube(query)
     return render_template_string(HTML_TEMPLATE, query=query, results=results)
 
+def download_with_ytdlp(url, input_file):
+    ydl_opts = {
+        'outtmpl': input_file,
+        'format': 'worst[ext=mp4]/worst',
+        'nocheckcertificate': True,
+        'quiet': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['mweb', 'android', 'ios']
+            }
+        }
+    }
+    with YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+
+def download_with_cobalt(url, input_file):
+    req = urllib.request.Request(
+        "https://api.cobalt.tools/",
+        data=json.dumps({"url": url, "videoQuality": "360"}).encode('utf-8'),
+        headers={
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0'
+        },
+        method='POST'
+    )
+    with urllib.request.urlopen(req, timeout=20) as response:
+        res_data = json.loads(response.read().decode('utf-8'))
+        stream_url = res_data.get('url')
+        if stream_url:
+            urllib.request.urlretrieve(stream_url, input_file)
+            return True
+    return False
+
 @app.route('/download', methods=['GET'])
 def download():
     video_id = request.args.get('id')
@@ -106,21 +141,35 @@ def download():
     if os.path.exists(output_file):
         os.remove(output_file)
 
-    ydl_opts = {
-        'outtmpl': input_file,
-        'format': 'worst[ext=mp4]/worst',
-        'nocheckcertificate': True
-    }
+    download_success = False
+    
+    # Method 1: Mobile Player Bypass
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        download_with_ytdlp(url, input_file)
+        if os.path.exists(input_file) and os.path.getsize(input_file) > 0:
+            download_success = True
+    except Exception as e:
+        print("yt-dlp failed, trying fallback:", e)
 
+    # Method 2: Cobalt API Fallback
+    if not download_success:
+        try:
+            if download_with_cobalt(url, input_file):
+                download_success = True
+        except Exception as e:
+            print("Cobalt failed:", e)
+
+    if not download_success:
+        return "ডাউনলোড ব্যর্থ হয়েছে। ইউটিউব সার্ভার ব্লক করেছে, অন্য ভিডিও ট্রাই করুন।", 500
+
+    try:
+        # Convert video to Symphony B100 resolution (176x144 3GP)
         cmd = f"ffmpeg -y -i {input_file} -r 15 -s 176x144 -b:v 128k -ac 1 -ar 8000 -ab 12.2k {output_file}"
         subprocess.run(cmd, shell=True, check=True)
 
         if os.path.exists(output_file):
             return send_file(output_file, as_attachment=True, download_name=f"{video_id}.3gp")
-        return "Conversion failed", 500
+        return "3GP রূপান্তর ব্যর্থ হয়েছে", 500
     except Exception as e:
         return f"Error: {str(e)}", 500
 
