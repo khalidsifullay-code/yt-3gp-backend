@@ -1,46 +1,34 @@
 import os
-import re
-import json
-import urllib.parse
-import urllib.request
 import subprocess
+import json
+import urllib.request
+import urllib.parse
 from flask import Flask, request, send_file, render_template_string
 from yt_dlp import YoutubeDL
 
 app = Flask(__name__)
-
-# ব্যাকআপ প্রক্সি এপিআই লিস্ট
-PIPED_APIS = [
-    "https://pipedapi.kavin.rocks",
-    "https://api.piped.privacydev.net",
-    "https://pipedapi.mha.fi",
-    "https://pipedapi.tokhmi.xyz"
-]
-
-INVIDIOUS_APIS = [
-    "https://inv.nadeko.net",
-    "https://yewtu.be",
-    "https://invidious.nerdvpn.de",
-    "https://invidious.privacydev.net"
-]
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YouTube Lite (3GP)</title>
     <style>
-        body { font-family: sans-serif; font-size: 12px; margin: 5px; padding: 0; background: #fff; color: #000; }
-        input, button { font-size: 12px; margin: 2px 0; }
-        .item { border-bottom: 1px solid #ccc; padding: 6px 0; margin-bottom: 5px; }
+        body { font-family: sans-serif; font-size: 13px; margin: 8px; padding: 0; background: #fff; color: #000; }
+        input[type="text"] { font-size: 13px; padding: 5px; width: 60%; }
+        button { font-size: 13px; padding: 5px 10px; }
+        .item { border-bottom: 1px solid #ccc; padding: 8px 0; margin-bottom: 4px; }
+        .title { font-weight: bold; display: block; margin-bottom: 4px; }
         a { color: blue; text-decoration: underline; font-weight: bold; }
+        .error { color: red; font-weight: bold; }
     </style>
 </head>
 <body>
     <h3>YouTube Lite (3GP)</h3>
     <form action="/" method="GET">
-        <input type="text" name="q" value="{{ query }}" placeholder="ভিডিও নাম লিখুন...">
+        <input type="text" name="q" value="{{ query }}" placeholder="ভিডিওর নাম লিখুন..." required>
         <button type="submit">Search</button>
     </form>
     <hr>
@@ -48,110 +36,91 @@ HTML_TEMPLATE = """
         {% if results %}
             {% for item in results %}
             <div class="item">
-                <b>{{ item.title }}</b><br>
+                <span class="title">{{ item.title }}</span>
                 <a href="/download?id={{ item.id }}">[ Download 3GP ]</a>
             </div>
             {% endfor %}
         {% else %}
-            <p>কোনো ভিডিও পাওয়া যায়নি। অন্য কিছু লিখে চেষ্টা করুন।</p>
+            <p class="error">কোনো ভিডিও পাওয়া যায়নি। আবার চেষ্টা করুন।</p>
         {% endif %}
     {% endif %}
 </body>
 </html>
 """
 
-# ১. বহুস্তরীয় সার্চ ফাংশন
 def search_videos(query):
-    encoded = urllib.parse.quote(query)
     results = []
-    
-    # ধাপ ১: মোবাইল ইউটিউব স্ক্র্যাপিং
-    try:
-        url = f"https://www.youtube.com/results?search_query={encoded}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
-        }
-        req = urllib.request.Request(url, headers=headers)
-        html = urllib.request.urlopen(req, timeout=6).read().decode('utf-8', errors='ignore')
-        
-        matches = re.findall(r'"videoRenderer":\{"videoId":"([^"]+)".*?"title":\{"runs":\[\{"text":"([^"]+)"\}', html)
-        seen = set()
-        for vid, title in matches:
-            if vid not in seen:
-                seen.add(vid)
-                results.append({'id': vid, 'title': title})
-            if len(results) >= 6:
-                break
-        if results:
-            return results
-    except Exception as e:
-        print("Scrape Search Error:", e)
 
-    # ধাপ ২: Piped API ব্যাকআপ
-    for api in PIPED_APIS:
-        try:
-            url = f"{api}/search?q={encoded}&filter=all"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                for item in data.get('items', []):
-                    if item.get('type') == 'stream':
-                        v_id = item.get('url', '').replace('/watch?v=', '')
-                        if v_id:
-                            results.append({'id': v_id, 'title': item.get('title')})
+    # পদ্ধতি ১: YouTube Android Innertube API (বট ব্লক বাইপাস করতে সক্ষম)
+    try:
+        url = "https://www.youtube.com/youtubei/v1/search"
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": "ANDROID",
+                    "clientVersion": "19.02.34",
+                    "hl": "en",
+                    "gl": "US"
+                }
+            },
+            "query": query
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'User-Agent': 'com.google.android.youtube/19.02.34 (Linux; U; Android 11; en_US)'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            contents = data.get('contents', {}).get('sectionListRenderer', {}).get('contents', [])
+            for content in contents:
+                item_section = content.get('itemSectionRenderer', {}).get('contents', [])
+                for item in item_section:
+                    v_info = item.get('videoRenderer', {})
+                    v_id = v_info.get('videoId')
+                    title_text = ""
+                    runs = v_info.get('title', {}).get('runs', [])
+                    if runs:
+                        title_text = runs[0].get('text', '')
+                    if v_id and title_text:
+                        results.append({'id': v_id, 'title': title_text})
                     if len(results) >= 6:
                         break
-                if results:
-                    return results
-        except Exception as e:
-            print("Piped Search Error:", e)
+                if len(results) >= 6:
+                    break
+            if results:
+                return results
+    except Exception as e:
+        print("Innertube search failed:", e)
 
-    # ধাপ ৩: Invidious API ব্যাকআপ
-    for api in INVIDIOUS_APIS:
-        try:
-            url = f"{api}/api/v1/search?q={encoded}&type=video"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                for item in data[:6]:
-                    results.append({'id': item.get('videoId'), 'title': item.get('title')})
+    # পদ্ধতি ২: yt-dlp flat extraction (ব্যাকআপ সার্চ)
+    try:
+        ydl_opts = {
+            'extract_flat': True,
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch6:{query}", download=False)
+            if info and 'entries' in info:
+                for entry in info['entries']:
+                    if entry and entry.get('id'):
+                        results.append({
+                            'id': entry.get('id'),
+                            'title': entry.get('title', f"Video {entry.get('id')}")
+                        })
                 if results:
                     return results
-        except Exception as e:
-            print("Invidious Search Error:", e)
+    except Exception as e:
+        print("yt-dlp search failed:", e)
 
     return results
-
-# ২. ভিডিও স্ট্রিম ও ডাউনলোড ব্যবস্থা
-def get_stream_url(video_id):
-    # Piped থেকে সরাসরি MP4 স্ট্রিম
-    for api in PIPED_APIS:
-        try:
-            url = f"{api}/streams/{video_id}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                for s in data.get('videoStreams', []):
-                    if s.get('url'):
-                        return s.get('url')
-        except Exception as e:
-            print("Piped Stream Error:", e)
-
-    # Invidious ব্যাকআপ
-    for api in INVIDIOUS_APIS:
-        try:
-            url = f"{api}/api/v1/videos/{video_id}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                streams = data.get('formatStreams', [])
-                if streams and streams[0].get('url'):
-                    return streams[0].get('url')
-        except Exception as e:
-            print("Invidious Stream Error:", e)
-
-    return None
 
 @app.route('/', methods=['GET'])
 def index():
@@ -175,47 +144,41 @@ def download():
     if os.path.exists(output_file):
         os.remove(output_file)
 
-    downloaded = False
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    download_success = False
 
-    # পদ্ধতি ১: Android Client দিয়ে yt-dlp ডাউনলোড
+    # yt-dlp দিয়ে এমপি৪ ডাউনলোড
     try:
         ydl_opts = {
             'outtmpl': input_file,
             'format': 'worst[ext=mp4]/worst',
             'nocheckcertificate': True,
             'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}
+            'no_warnings': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'mweb']}}
         }
         with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+            ydl.download([video_url])
         if os.path.exists(input_file) and os.path.getsize(input_file) > 0:
-            downloaded = True
+            download_success = True
     except Exception as e:
-        print("yt-dlp Direct Download Failed:", e)
+        print("Download failed:", e)
 
-    # পদ্ধতি ২: প্রক্সি স্ট্রিম লিঙ্ক ধরে রূপান্তর
-    if not downloaded:
-        stream_url = get_stream_url(video_id)
-        if stream_url:
-            try:
-                cmd = f'ffmpeg -y -i "{stream_url}" -t 600 -r 15 -s 176x144 -b:v 96k -ac 1 -ar 8000 -ab 12.2k -f 3gp "{output_file}"'
-                subprocess.run(cmd, shell=True, check=True)
-                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                    return send_file(output_file, as_attachment=True, download_name=f"{video_id}.3gp")
-            except Exception as e:
-                print("FFmpeg Direct Stream Failed:", e)
+    if not download_success:
+        return "ভিডিওটি ডাউনলোড করা সম্ভব হয়নি। অন্য ভিডিও চেষ্টা করুন।", 500
 
-    # যদি পদ্ধতি ১ এ ডাউনলোড সফল হয়ে থাকে তবে ফাইল থেকে 3GP তে কনভার্ট
-    if downloaded:
-        try:
-            cmd = f'ffmpeg -y -i "{input_file}" -t 600 -r 15 -s 176x144 -b:v 96k -ac 1 -ar 8000 -ab 12.2k -f 3gp "{output_file}"'
-            subprocess.run(cmd, shell=True, check=True)
-            if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                return send_file(output_file, as_attachment=True, download_name=f"{video_id}.3gp")
-        except Exception as e:
-            return f"Conversion Error: {str(e)}", 500
+    # Symphony B100 উপযোগী 3GP এ রূপান্তর
+    try:
+        cmd = f'ffmpeg -y -i "{input_file}" -r 15 -s 176x144 -b:v 96k -ac 1 -ar 8000 -ab 12.2k -f 3gp "{output_file}"'
+        subprocess.run(cmd, shell=True, check=True)
 
-    return "ইউটিউব সার্ভার আইপি সাময়িকভাবে ব্লক করেছে। ১ মিনিট পর অন্য ভিডিও চেষ্টা করুন।", 500
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            if os.path.exists(input_file):
+                os.remove(input_file)
+            return send_file(output_file, as_attachment=True, download_name=f"{video_id}.3gp")
+        return "3GP রূপান্তর ব্যর্থ হয়েছে", 500
+    except Exception as e:
+        return f"Conversion Error: {str(e)}", 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
